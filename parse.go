@@ -557,69 +557,6 @@ func getProtoFiles(root string, ignores string) ([]string, error) {
 	return protoFiles, nil
 }
 
-// getUpdatedLock finds all .proto files recursively in tree, parse each file
-// and accumulate all definitions into an updated Protolock.
-func getUpdatedLock(cfg Config) (*Protolock, error) {
-	// files is a slice of struct `ProtoFile` to be joined into the proto.lock file.
-	var files []ProtoFile
-
-	root, err := filepath.Abs(cfg.ProtoRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	protoFiles, err := getProtoFiles(root, cfg.Ignore)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, path := range protoFiles {
-		f, err := os.Open(path)
-		if err != nil {
-			return nil, err
-		}
-
-		// Have the parser report the file path
-		friendlyPath := path
-		cwd, err := os.Getwd()
-		if err == nil {
-			relpath, err := filepath.Rel(cwd, path)
-			if err == nil {
-				friendlyPath = relpath
-			}
-		}
-		entry, err := Parse(friendlyPath, f)
-		if err != nil {
-			printIfErr(f.Close())
-			return nil, err
-		}
-
-		localPath := strings.TrimPrefix(path, root)
-		localPath = strings.TrimPrefix(localPath, string(filepath.Separator))
-		protoFile := ProtoFile{
-			ProtoPath: ProtoPath(Protopath(localPath)),
-			Entry:     entry,
-		}
-		files = append(files, protoFile)
-
-		// manually close the file to prevent `too many open files` error
-		printIfErr(f.Close())
-	}
-
-	// add all the definitions from the updated set of protos to a Protolock
-	// used for analysis and comparison against the current Protolock, saved
-	// as the proto.lock file in the current directory
-	var updated Protolock
-	for _, file := range files {
-		updated.Definitions = append(updated.Definitions, Definition{
-			Filepath: file.ProtoPath,
-			Def:      file.Entry,
-		})
-	}
-
-	return &updated, nil
-}
-
 func printIfErr(err error) {
 	if err != nil {
 		fmt.Printf("protolock: %v\n", err)

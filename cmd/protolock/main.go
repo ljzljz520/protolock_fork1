@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/nilslice/protolock"
@@ -78,34 +77,30 @@ func main() {
 		fmt.Print(usage)
 
 	case "init":
-		r, err := protolock.Init(*cfg)
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-
-		err = saveToLockFile(*cfg, r)
-		if err != nil {
-			fmt.Println(err)
+		// InitToDisk captures one snapshot and publishes it exclusively and
+		// atomically; a lock created by a concurrent process is never
+		// overwritten.
+		if err := protolock.InitToDisk(*cfg); err != nil {
+			fmt.Println(logPrefix, "error:", err)
 			os.Exit(1)
 		}
 
 	case "commit":
-		// if force option is false (default), then disallow commit if
-		// there are any warnings encountered by runing a status check.
-		if !*force {
-			status(cfg)
-		}
-
-		r, err := protolock.Commit(*cfg)
-		if err != nil {
-			fmt.Println(err)
+		// Rules and plugins validate the exact snapshot that gets serialized;
+		// storage consistency is enforced even when --force is set.
+		report, err := protolock.CommitToDisk(*cfg, protolock.CommitOptions{
+			Force:   *force,
+			Plugins: pluginValidator(),
+		})
+		if err == protolock.ErrWarningsFound {
+			code, _ := protolock.HandleReport(report, os.Stdout, err)
+			if code != 0 {
+				os.Exit(code)
+			}
 			os.Exit(1)
 		}
-
-		err = saveToLockFile(*cfg, r)
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println(logPrefix, "error:", err)
 			os.Exit(1)
 		}
 
@@ -154,17 +149,17 @@ func status(cfg *protolock.Config) {
 	}
 }
 
-func saveToLockFile(cfg protolock.Config, r io.Reader) error {
-	lockfile, err := os.Create(cfg.LockFilePath())
-	if err != nil {
-		return err
-	}
-	defer lockfile.Close()
-
-	_, err = io.Copy(lockfile, r)
-	if err != nil {
-		return err
+// pluginValidator wires the external plugin runner into a library commit. The
+// report's Current/Updated values come from the single snapshot captured by
+// CommitToDisk, so plugins validate the exact bytes being published.
+func pluginValidator() protolock.PluginValidator {
+	if *plugins == "" {
+		return nil
 	}
 
-	return nil
+	list := *plugins
+	return func(report *protolock.Report) error {
+		_, err := runPlugins(list, report, *debug)
+		return err
+	}
 }
